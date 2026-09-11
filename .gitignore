@@ -6,3 +6,21 @@ src-tauri/icons/icon.ico
 .env
 .env.*
 !.env.example
+
+# Tool caches and browser-test output.
+.vite/
+.vitest/
+coverage/
+test-results/
+playwright-report/
+
+# Tauri/Rust build and local platform by-products.
+src-tauri/**/*.rs.bk
+src-tauri/*.pdb
+src-tauri/*.exe
+src-tauri/*.msi
+src-tauri/*.dmg
+src-tauri/*.AppImage
+
+.DS_Store
+Thumbs.db
