@@ -10,22 +10,69 @@ permissions:
 
 jobs:
   test:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
-      - shell: pwsh
+          node-version: 22.14.0
+          cache: pnpm
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Install Linux Tauri prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev xvfb
+      - name: Enable pnpm
         run: corepack enable
-      - shell: pwsh
-        run: pnpm.cmd install --frozen-lockfile
-      - shell: pwsh
-        run: pnpm.cmd check
-      - shell: pwsh
-        run: pnpm.cmd test
-      - shell: pwsh
-        run: pnpm.cmd build
-      - shell: pwsh
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check versions and TypeScript
+        run: pnpm check:version && pnpm check && pnpm lint
+      - name: Run unit and component tests
+        run: pnpm test
+      - name: Install browser E2E runtime
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run browser E2E
+        run: pnpm test:e2e
+      - name: Format and lint Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check && cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Run desktop E2E on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm test:e2e:desktop
+      - name: Run desktop E2E on Windows and macOS
+        if: runner.os != 'Linux'
+        run: pnpm test:e2e:desktop
+      - name: Build installers
+        run: pnpm tauri build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: gui-evidence-${{ matrix.os }}
+          path: |
+            src-tauri/target/release/bundle/
+            test-results/
+            playwright-report/
+          if-no-files-found: warn
+
+  supply-chain:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Audit production JavaScript dependencies
+        run: pnpm audit --prod --audit-level high
+      - name: Audit Rust dependencies and report licenses
+        run: cargo install cargo-audit --locked && cargo audit --file src-tauri/Cargo.lock --deny warnings && pnpm licenses list --prod

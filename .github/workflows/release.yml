@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags: ["gui-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-13, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.14.0
+          cache: pnpm
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Install Linux Tauri prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev xvfb
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Verify tag version
+        if: github.event_name == 'push'
+        run: pnpm check:version "$GITHUB_REF_NAME"
+      - name: Run release test suite
+        run: pnpm test && pnpm test:e2e
+      - name: Run desktop release smoke on Linux
+        if: runner.os == 'Linux'
+        run: xvfb-run -a pnpm test:e2e:desktop
+      - name: Run desktop release smoke on Windows and macOS
+        if: runner.os != 'Linux'
+        run: pnpm test:e2e:desktop
+      - name: Build unsigned native installers
+        run: pnpm tauri build
+      - name: Prepare release artifact directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force release-artifacts | Out-Null
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: src-tauri/target/release/bundle
+          format: spdx-json
+          output-file: release-artifacts/kakune-gui-${{ matrix.os }}.spdx.json
+      - name: Stage release files
+        shell: pwsh
+        run: |
+          Get-ChildItem src-tauri/target/release/bundle -File -Recurse | Copy-Item -Destination release-artifacts
+          Get-ChildItem test-results -Filter *.png -File -Recurse -ErrorAction SilentlyContinue | Copy-Item -Destination release-artifacts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kakune-gui-${{ matrix.os }}
+          path: release-artifacts/
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: release-artifacts
+          pattern: kakune-gui-*
+          merge-multiple: true
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem release-artifacts -File | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content release-artifacts/SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: release-artifacts/*
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-artifacts/* --generate-notes
