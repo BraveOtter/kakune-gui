@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Main desktop window capabilities","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Main desktop window capabilities","local":true,"windows":["main"],"permissions":["core:default","wdio:default","wdio-webdriver:default"]}}
